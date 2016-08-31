@@ -47,7 +47,7 @@ count=1
 
 meminfolog()
   {
-    echo "<--------第$count次播放，打印进程信息--------->" |tee -a $leektestlogDir/mediaproc.log
+    echo "<--------第$count次开始播放，打印进程信息--------->" |tee -a $leektestlogDir/mediaproc.log
     adb shell procrank| head -n 1|tee -a $leektestlogDir/mediaproc.log
     adb shell procrank | grep mediaserver | tee -a $leektestlogDir/mediaproc.log
   }
@@ -233,17 +233,19 @@ commonSelect()
 #该函数作为整个运行和检测开始的公共运行函数，需要传入四个参数：$1为协议名称，$2为测试类型，$3为videoUrl,$4为片源名字，$5为日志目录
 commonRun()
 {
-  # while true
-   #do
-    #meminfolog
-   #sleep 5
-	type="$1_$2"
-	runplay $3 $4 $5 $type
-	if [ "$2" = allVideosTest ] || [ "$2" = singleVideoTest ];
-	then
-		testTvdVideo $4  $type  $1
-	fi
+	
+		meminfolog
+		sleep 5
+		count=$((count+1))
+		type="$1_$2"
+		runplay $3 $4 $5 $type
+		if [ "$2" = allVideosTest ] || [ "$2" = singleVideoTest ];
+		then
+			testTvdVideo $4  $type  $1
+		fi
+		
 	killall vlc
+	
 	#killall adb
 }
 
