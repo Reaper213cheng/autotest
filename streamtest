@@ -1,0 +1,594 @@
+#!/bin/bash
+
+    #如果IP为空，则ping服务器
+#if [ -z "$server" ]; then 
+    #若ping不通，则退出。
+	#if ! ping -c 1 test.local ; then
+		#exit;
+	#fi
+    #对流媒体服务器进行ping，若ping通过则在返回的消息中找到含有from的那条，并在该条信息中找到该服务器主机的ip。
+	#server=`ping -c 1 test.local |grep from |cut -d' ' -f5 |tr -d '(:)'`
+	
+	#echo $server
+#fi
+
+
+#播放开始的时候进行一次mediaserver的pid记录
+#meidaPid=`adb shell busybox pidof mediaserver`
+
+
+###播放器崩溃检测模块
+MediaServerTest()
+{
+	#while true
+	#do 
+		pid=`adb shell busybox pidof mediaserver`
+		sleep 5
+		if [ "$meidaPid" != "$pid" ];  
+		then
+			echo "Fatal signal !" 
+			break    
+		fi
+	#done
+} 
+
+
+#-----------------------------------------------------------------------------------------------
+meidaPid=`adb shell busybox pidof mediaserver`
+server=192.168.4.134
+#播放列表文件#
+playlist=~/workspace/share/playlist
+hlsplaylist=~/workspace/share/hlsplaylist
+mp4list=~/workspace/share/mp4list
+#日志存放目录#
+logDir=~/workspace/share/log
+leektestlogDir=~/workspace/share/log/leektest
+count=1
+
+meminfolog()
+  {
+    echo "<--------第$count次播放，打印进程信息--------->" |tee -a $leektestlogDir/mediaproc.log
+    adb shell procrank| head -n 1|tee -a $leektestlogDir/mediaproc.log
+    adb shell procrank | grep mediaserver | tee -a $leektestlogDir/mediaproc.log
+  }
+
+
+###vlc流化模块###
+vlcModule()
+{     
+	#避免因传过来的文件路径参数无效。例如现在的问题就是传过来的参数为~/workspace/...但是实际运行中发现，vlc在执行流化指令时会将~做单独操作。
+	#所以作为进行流化片源的路径就变成了/home/user/~/workspace/...这样vlc就会报错：无法打开该路径下的文件。
+	tmp=`echo $2| sed "s/^\~/\/home\/user/"`
+	echo "$tmp"
+  	if [ "$1" = "rtp" ];	
+  	then
+		cvlc  $tmp --sout '#rtp{dst=239.255.1.1,port=1234,mux=ts}' \
+		--sout-keep  --play-and-exit  >/dev/null 2>&1 &
+		
+	elif [ "$1" = "udp" ];
+	then
+		cvlc  $tmp  --sout '#std{access=udp,dst=239.255.1.1:1234}' \
+		--sout-keep  --play-and-exit  >/dev/null 2>&1 &
+		
+
+	elif [ "$1" = "rtsp" ];	
+	then
+		cvlc  $tmp --sout "#rtp{sdp=rtsp://$server:8554/stream}" \
+		--sout-keep  --play-and-exit  >/dev/null 2>&1 &     
+		
+
+  	elif [ "$1" = "mms" ];
+  	then
+		cvlc  $tmp --sout '#duplicate{dst=std{access=mmsh,mux=asfh,dst=0.0.0.0:8005},dst=display}' \
+		--sout-keep  --play-and-exit  >/dev/null 2>&1 &
+  	else 
+		echo "错误的流媒体协议!!!"
+
+  	fi   
+
+}
+
+
+###播放器打开并进行日志记录
+runplay()
+#这个函数需要传入四个参数：片源videourl、	片源名字videoname、日志路径logDir、完整测试类型
+{ 
+	adb logcat -c
+	adb logcat -v time > $3_$4_$2.log &
+	adb shell am start -n com.softwinner.TvdVideo/.TvdVideoActivity  -d $1
+}
+
+
+###播放器监测模块
+testTvdVideo()
+#这个函数需要传进三个参数：第一个参数$1为片源的名字，第二个参数$2为完整测试类型（http_allvideostest），第三个参数$3是协议名称（便于进行vlc的判断）
+{      
+	sleep 5
+
+	#top表示显示当前系统正在进行执行的过程和相关信息；-n 1 表示循环显示的次数。下边的循环表示若进程信息里一直包含有TvdVideo和fg的信息显示continue.
+        #只能判断播放器应用是否正常打开，不能判断片源是否正常播放。
+	while 
+        adb shell dumpsys window windows | grep mCurrentFocus | \
+        grep "com.softwinner.TvdVideo.TvdVideoActivity" >/dev/null
+        #adb shell top -n 1 |grep TvdVideo |grep fg
+	do  
+		MediaServerTest
+	       if [ $3 = rtp ] || [ $3 = rtsp ] || [ $3 = udp ] || [ $3 = mms ];
+	       then
+			vlctest=`ps -ef | grep vlc| grep -v "grep"`
+			if [ "$vlctest" = "" ];
+			then 
+				echo "vlc流化进程结束！！！"
+				adb shell input keyevent 4
+			fi
+		fi
+		echo "片源$1正在进行$2测试中..."
+		sleep 5
+                
+	done
+}
+
+
+###该函数作为整个选择播放测试的开始
+testStart()
+{
+	case $1 in
+	"http")
+		#UrlListAndPlay 函数传入四个参数：播放列表、协议名称、日志目录、测试类型
+		UrlListAndPlay $playlist $1 $testlogDir $2
+		
+		;;
+	"https")
+
+		UrlListAndPlay $playlist $1 $testlogDir $2
+
+		;;
+	"hls")
+		UrlListAndPlay $hlsplaylist $1 $testlogDir $2
+
+		
+		;;
+	"rtmp")
+		UrlListAndPlay $mp4list $1 $testlogDir $2
+
+		;;
+	"rtsp")
+		UrlListAndPlay $mp4list $1 $testlogDir $2
+		
+		;;
+	"rtp")
+		UrlListAndPlay $mp4list $1 $testlogDir $2
+
+		;;
+	"udp")
+		 UrlListAndPlay $mp4list $1 $testlogDir $2
+
+		;;
+	"mms")
+		UrlListAndPlay $mp4list $1 $testlogDir $2
+
+		;;
+	*)
+		echo "wrong protocol";
+		exit
+		;;
+	esac
+}
+
+
+playEnd()
+{
+	
+	string=`adb shell top -n 1 |grep TvdVideo |grep fg`
+	if [ "$string" = "" ];
+	then  
+		echo  "播放结束,测试退出！！！"
+		break
+	fi
+
+	
+}
+
+
+#该函数作为四个测试类型的公共选择函数（主要是用来进行片源路径到url的转换）需要传进两个参数：$1是协议名称，$2是被选中的片源location
+commonSelect()
+{
+
+	if [ "$1" = http ];
+	then
+		videoUrl=`echo $2| sed "s/^\~\/workspace/$1:\/\/$server/"` 
+		
+	elif [ "$1" = https ];
+	then
+		#$2为被选中的片源location
+		videoUrl=`echo $2| sed "s/^\~\/workspace/$1:\/\/$server/"`
+	elif [ "$1" = hls ];
+	then
+		#$2为被选中的片源location
+		videoUrl=`echo $2| sed "s/^\~\/workspace/http:\/\/$server/"` 
+	elif [ "$1" = rtmp ];
+	then
+		videoUrl=`echo $2| sed "s/^\~\/workspace\/share\/mp4/rtmp:\/\/$server\/vod/"`
+	elif [ "$1" = rtp ];
+	then 
+		vlcModule  rtp  $2
+		videoUrl=rtp://239.255.1.1:1234
+	elif [ "$1" = udp ];
+	then 
+		vlcModule udp $2
+		videoUrl=udp://239.255.1.1:1234
+	elif [ "$1" = rtsp ];
+	then 
+		vlcModule udp $2
+		videoUrl=rtsp://$server:8554/stream
+	elif [ "$1" = mms ];
+	then 
+		vlcModule mms $2
+		videoUrl=mmsh://$server:8005
+	fi
+	videoName=` echo $2 |cut -d'/' -f5 `
+}
+
+
+#该函数作为整个运行和检测开始的公共运行函数，需要传入四个参数：$1为协议名称，$2为测试类型，$3为videoUrl,$4为片源名字，$5为日志目录
+commonRun()
+{
+  # while true
+   #do
+    #meminfolog
+   #sleep 5
+	type="$1_$2"
+	runplay $3 $4 $5 $type
+	if [ "$2" = allVideosTest ] || [ "$2" = singleVideoTest ];
+	then
+		testTvdVideo $4  $type  $1
+	fi
+	killall vlc
+	#killall adb
+}
+
+###服务器资源解析和播放模块（播放开始）
+UrlListAndPlay()
+{
+         #所有片源循环播放的实现
+	if [ $4  =  allVideosTest ] ;
+	then
+		#$1是传入的播放列表(playlist或hlsPlaylist或mp4list)
+		for location in `cat $1`
+		do 
+			#参数$2为协议名字，$4为测试类型，$3为日志目录
+			commonSelect $2 $location
+			commonRun $2 $4 $videoUrl $videoName $3 
+		done
+		
+	
+	#单一片源循环播放的实现
+	elif [ $4 = singleVideoTest ] ; 
+	then
+		location=`cat $1|sort -R|head -n 1`
+		for i in $(seq 3)  
+		do 
+			commonSelect $2 $location
+			commonRun $2 $4 $videoUrl $videoName $3 
+		done
+	
+	
+	#反复退出和进入播放的实现
+	elif [ $4 = backTest ] ;
+	then
+		
+		#head -n t中的t决定进行测试的片源的数量
+		for location in `cat $1|sort -R|head -n 2`
+		do 
+			
+			range=10
+			#单个片源的测试次数
+			for i in $(seq 2)
+			do  
+				echo "This is backTest !"
+				commonSelect $2 $location
+				commonRun $2 $4 $videoUrl $videoName $3 
+				sleep $range
+				range=$((range+5))
+				echo "$range" 
+				#返回按键#
+				adb shell input keyevent 4
+			done
+		done
+	
+	
+	
+	#seekTest的实现	
+	else
+		#目前只进行一个片源的seekTest操作
+		location=`cat $1|sort -R | head -n 1`
+		sleep 2
+		
+		commonSelect $2 $location
+		commonRun $2 $4 $videoUrl $videoName $3 
+		sleep 10
+		#seek次数，快进和后退各5次
+		for i in $(seq 5) 
+		do
+			playEnd 
+			echo "This is seekTest !"
+			#导航下键#
+			adb shell input keyevent 20
+			adb shell input keyevent 20
+			#导航右键# 
+			adb shell input keyevent 22
+			playEnd 
+			sleep 15
+			playEnd 
+			adb shell input keyevent 20
+			adb shell input keyevent 20
+			#导航左键
+			adb shell input keyevent 21
+			sleep 15
+		done
+	
+	fi
+
+
+}
+
+###列表循环播放测试准备模块###
+AllVideosTest()
+{
+	testType=allVideosTest
+	#对应测试类型的日志目录
+	testlogDir=$logDir/$testType/
+	
+	#参数$1为协议名字streamProto 、参数$2为测试类型testType，
+	#传入参数的目的是生成日志的时候可以减少文件夹的创建，只需用协议名称和测试类型和片源名字来分辨日志文件
+	testStart $1  $testType
+}
+
+
+###随机选取片源播放测试准备模块
+SingleVideoTest()
+{
+
+	testType=singleVideoTest
+	testlogDir=$logDir/$testType/
+
+	##第一个参数为协议名字 第二个参数为测试类型
+	testStart $1  $testType	
+}
+
+
+###播放器频繁退出和进入测试准备模块
+BackTest()
+{
+	
+	testType=backTest
+	testlogDir=$logDir/$testType/
+	##第一个参数为协议名字 第二个参数为测试类型
+	testStart $1  $testType
+}
+
+
+### 跳播测试准备模块
+
+#跳播测试的思想：每次正在播放的时候，按下返回键会直接退出，所以每次在进行跳播的时候，需要先按下不是返回键的键 
+#这时会弹出进度条，而且光标的位置是在播放/暂停键上，此时按下下键就把光标锁定到进度条上，接着按下右键则快进，左键则快退。
+#考虑到进度条的显示时间为5s，故每次挑播之后休眠一段时间再进行跳播。
+SeekTest()
+{
+	testType=seekTest
+	testlogDir=$logDir/$testType/
+	##第一个参数为协议名字 第二个参数为测试类型
+	testStart $1  $testType
+}
+
+typeTestStart()
+{
+
+	case $1 in
+
+	1)
+		#$2参数为协议名称streamProto
+	  	AllVideosTest  $2
+		;;
+	2)
+		SingleVideoTest  $2      
+		;;
+	3)
+		BackTest $2
+		;;
+
+	4)  	SeekTest $2
+ 		;;
+
+	q)      
+		echo "exit"
+		break
+		;;
+	esac
+     
+}
+
+
+###第二次手动干预选择，测试类型选择
+selectTestType()
+{ 
+	echo "$1 test Select Type:\n"
+	echo "\t$1 AllVideosTest      1\n"
+	echo "\t$1 SingleVideoTest   2\n"
+	if [ $1 = http ] || [ $1 = https ] || [ $1 = hls ] ;
+	then   
+		echo "\t$1 BackTest          3\n"
+		echo "\t$1 SeekTest          4\n"
+	fi
+	echo "\texit	         q\n"
+}
+
+
+
+typeSelectStart()
+{
+	while true
+	do      
+		#selectTestType 传入参数为协议名称streamProto，传入协议名称的目的只是为了分辨当前处在该个协议的测试类型选项中
+		selectTestType $1
+		read type
+		
+		#这两个参数分别表示测试的类型和$1是协议名字streamProto
+		typeTestStart $type  $1
+	done    
+}
+
+###这里的所有测试函数里都是对协议的说明，以及将协议名字作为参数传入typeSelectStart
+testHTTP()
+{      
+        streamProto=http
+	typeSelectStart $streamProto
+
+}
+
+
+
+testHTTPS()
+{
+	streamProto=https
+	typeSelectStart $streamProto
+
+  
+}
+
+
+
+testHLS()
+{
+   
+	streamProto=hls
+	typeSelectStart $streamProto
+	
+}
+
+
+
+###流化协议测试模块###
+testRTMP()
+{
+	streamProto=rtmp
+	typeSelectStart $streamProto
+}
+
+
+testRTSP()
+{
+
+	streamProto=rtsp
+	typeSelectStart $streamProto
+    
+}
+
+
+testRTP()
+{
+	streamProto=rtp
+	typeSelectStart $streamProto
+      	    
+}
+
+
+testUDP()
+{
+
+	streamProto=udp
+	typeSelectStart $streamProto
+	   
+}
+
+
+testMMS()
+{
+
+	streamProto=mms
+   	typeSelectStart $streamProto
+	
+}
+
+
+
+
+
+processCmd()
+{
+	case $1 in
+	1)
+		testHTTP
+		;;
+	2)
+		testHTTPS
+		;;
+	3)
+		testHLS
+		;;
+	4)
+		testRTMP
+		;;
+	5)
+		testRTSP
+		;;
+	6)
+		testRTP
+		;;
+	7)
+		testUDP
+		;;
+	8)
+		testMMS
+		;;
+	*)
+		echo "wrong protocol";
+		exit
+		;;
+	esac
+       
+       # killall vlc 
+	killall adb
+}
+
+
+
+###第一次手动干预选择，选择测试协议
+selectProto()
+{
+	echo "Select Protocol:\n"
+	echo "  HTTP	1\n"
+	echo "  HTTPS	2\n"
+	echo "  HLS	3\n"
+	echo "  RTMP	4\n"
+	echo "  RTSP	5\n"
+	echo "  RTP	6\n"
+	echo "  UDP	7\n"
+	echo "  MMS	8\n"
+	echo "  exit	q\n"
+}
+
+
+#echo "Before playing video,meidaPid is $meidaPid !"
+###脚本执行开始位置
+
+while true
+do  
+        #selectTestType
+	selectProto
+	read proto
+	
+	case $proto in
+	[1-8])
+		processCmd $proto
+		;;
+	q)
+		echo "exit"
+		exit
+		;;
+	*)
+		echo "Select again"
+		;;
+	esac
+        
+done
